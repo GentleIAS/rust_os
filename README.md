@@ -237,3 +237,5 @@ build-std = ["core", "compiler_builtins"]
 ```bash
 cargo build --target x86_64-rust_os.json
 ```
+
+#### 内存相关函数
