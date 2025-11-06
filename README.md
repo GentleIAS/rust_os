@@ -239,3 +239,139 @@ cargo build --target x86_64-rust_os.json
 ```
 
 #### 内存相关函数
+` Rust `编译器假定所有内置函数`（built-in functions）`在所有系统内都是存在且可用的。事实上这个前提只对了一半， 绝大多数内置函数都可以被` compiler_builtins `提供，而这个` crate `刚刚已经被我们重编译过了，然而部分内存相关函数是需要操作系统相关的标准` C `库提供的。` compiler_builtins `事实上自带了所有相关函数的实现，只是在默认情况下，出于避免和标准C库发生冲突的考量被禁用掉了，此时我们需要将` build-std-features `配置项设置为` ["compiler-builtins-mem"] `来启用这个特性。如同` build-std `配置项一样，该特性可以使用` -Z `参数启用，也可以在` .cargo/config.toml `中使用` unstable `配置集启用。现在我们的配置文件中的相关部分是这样子的：
+```toml
+[unstable]
+build-std-features = ["compiler-builtins-mem"]
+build-std = ["core", "compiler_builtins"]
+```
+
+该参数为` compiler_builtins `启用了` mem `特性，在内部通过` #[unsafe(no_mangle)] `向链接器提供了` memcpy `等函数的实现
+
+#### 设置默认编译目标
+每次调用` cargo build `命令都需要传入` --target `参数，可以在` .cargo/config.toml `中加入` cargo `配置，使用` x86_64-rust_os.json `这个文件作为默认的` --target `参数：
+```toml
+[build]
+target = "x86_64-rust_os.json"
+```
+
+### 向屏幕打印字符
+最简单的方式是写入` VGA `字符缓冲区`（VGA text buffer）`：这是一段映射到` VGA `硬件的特殊内存片段，包含着显示在屏幕上的内容。通常情况下，它能够存储` 25 `行、` 80 `列共` 2000 `个字符单元`（character cell）`；每个字符单元能够显示一个` ASCII `字符，也能设置这个字符的前景色`（foreground color）`和背景色`（background color）`
+
+####  VGA 字符缓冲区
+- 1.定义：VGA 字符缓冲区是 x86 机器在“文本模式”下的显存映射区域，CPU 直接往这块内存写数据，屏幕就会显示对应字符
+- 2.物理地址：常见为 0xB8000（段:偏移通常写作 B800:0000）
+- 3.尺寸：默认 80 列 × 25 行，共 2000 个字符单元；每个单元占 2 字节，总计 4000 字节
+- 4.内存布局（每单元 2 字节）：
+ - 第 1 字节：ASCII 字符码
+ - 第 2 字节：属性字节（颜色/闪烁）
+ - 低 4 位：前景色
+ - 高 3 位：背景色
+ - 最高位：闪烁位（某些模式下可作为“高亮背景”位）
+ - 颜色编码（常见 4 位）：0-黑, 1-蓝, 2-绿, 3-青, 4-红, 5-品红, 6-棕/黄, 7-亮灰, 8-暗灰, 9-亮蓝, …, 15-白
+- 工作方式：这是“内存映射 I/O”。向 0xB8000 开始的内存写入对应字节，VGA 控制器会把它渲染到屏幕上；无需调用 BIOS 或操作系统 API。
+典型用途：在自制内核早期阶段打印调试文本（例如在 Rust no_std/no_main 环境下），不用依赖串口或图形模式
+
+```rust
+static HELLO: &[u8] = b"Hello World!";
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    let vga_buffer = 0xb8000 as *mut u8;
+
+    for (i, &byte) in HELLO.iter().enumerate() {
+        unsafe {
+            *vga_buffer.offset(i as isize * 2) = byte;
+            *vga_buffer.offset(i as isize * 2 + 1) = 0xb;
+        }
+    }
+
+    loop {}
+}
+```
+
+在这段代码中，我们预先定义了一个字节字符串`（byte string）`类型的静态变量`（static variable）`，名为` HELLO `。我们首先将整数` 0xb8000 `转换`（cast）`为一个裸指针`（raw pointer）`。这之后，我们迭代` HELLO `的每个字节，使用` enumerate `获得一个额外的序号变量` i `。在` for `语句的循环体中，我们使用` offset `偏移裸指针，解引用它，来将字符串的每个字节和对应的颜色字节` 0xb `代表淡青色——写入内存位置
+
+要注意的是，所有的裸指针内存操作都被一个` unsafe `语句块`（unsafe block）`包围。这是因为，此时编译器不能确保我们创建的裸指针是有效的；一个裸指针可能指向任何一个你内存位置；直接解引用并写入它，也许会损坏正常的数据。使用` unsafe `语句块时，程序员其实在告诉编译器，自己保证语句块内的操作是有效的。事实上，` unsafe `语句块并不会关闭` Rust `的安全检查机制；它允许你多做的事情只有四件
+
+使用` unsafe `语句块要求程序员有足够的自信，所以必须强调的一点是，肆意使用` unsafe `语句块并不是` Rust `编程的一贯方式。在缺乏足够经验的前提下，直接在` unsafe `语句块内操作裸指针，非常容易把事情弄得很糟糕；比如，在不注意的情况下，我们很可能会意外地操作缓冲区以外的内存
+
+在这样的前提下，我们希望最小化` unsafe `语句块的使用。使用` Rust `语言，我们能够将不安全操作将包装为一个安全的抽象模块。举个例子，我们可以创建一个` VGA `缓冲区类型，把所有的不安全语句封装起来，来确保从类型外部操作时，无法写出不安全的代码：通过这种方式，我们只需要最少的` unsafe `语句块来确保我们不破坏内存安全`（memory safety）`
+
+## 启动内核
+
+### 创建引导映像
+要将可执行程序转换为可引导的映像`（bootable disk image）`，我们需要把它和引导程序链接。这里，引导程序将负责初始化` CPU `并加载我们的内核。编写引导程序并不容易，所以我们不编写自己的引导程序，而是使用已有的` bootloader `包；无需依赖于` C `语言，这个包基于` Rust `代码和内联汇编，实现了一个五脏俱全的` BIOS `引导程序。为了用它启动我们的内核，我们需要将它添加为一个依赖项，在` Cargo.toml `中添加下面的代码：
+
+```toml
+[dependencies]
+bootloader = "0.9"    #必须 0.9 ，高了环境不支持，缺少配置
+```
+
+添加引导程序为依赖项，并不足以创建一个可引导的磁盘映像；我们还需要内核编译完成之后，将内核和引导程序组合在一起。然而，截至目前，原生的` cargo `并不支持在编译完成后添加其它步骤
+
+为了解决这个问题，我们建议使用` bootimage `工具——它将会在内核编译完毕后，将它和引导程序组合在一起，最终创建一个能够引导的磁盘映像。我们可以使用下面的命令来安装这款工具：
+```bash
+cargo install bootimage
+```
+
+为了运行` bootimage `以及编译引导程序，我们需要安装` rustup `模块` llvm-tools-preview `，安装这个工具我们可以使用：
+```bash
+rustup component add llvm-tools-preview
+```
+
+成功安装` bootimage `后，创建一个可引导的磁盘映像：
+```bash
+cargo bootimage
+```
+
+` bootimage `工具开始使用` cargo build `编译你的内核，所以它将增量编译我们修改后的源码。在这之后，它会编译内核的引导程序，这可能将花费一定的时间；但和所有其它依赖包相似的是，在首次编译后，产生的二进制文件将被缓存下来——这将显著地加速后续的编译过程。最终，` bootimage `将把内核和引导程序组合为一个可引导的磁盘映像
+
+运行这行命令之后，我们应该能在` target/x86_64-rust_os/debug `目录内找到我们的映像文件` bootimage-rust_os.bin `。我们可以在虚拟机内启动它，也可以刻录到` U 盘 `上以便在真机上启动。（需要注意的是，因为文件格式不同，这里的` bin `文件并不是一个光驱映像，所以将它刻录到光盘不会起作用。）
+
+在这行命令背后，` bootimage `工具执行了三个步骤：
+- 编译我们的内核为一个` ELF（Executable and Linkable Format）`文件
+- 编译引导程序为独立的可执行文件
+- 将内核` ELF `文件按字节拼接`（append by bytes）`到引导程序的末端
+
+当机器启动时，引导程序将会读取并解析拼接在其后的` ELF `文件。这之后，它将把程序片段映射到分页表`（page table）`中的虚拟地址`（virtual address）`，清零` BSS段（BSS segment）`，还将创建一个栈。最终它将读取入口点地址`（entry point address）`，我们程序中` _start `函数的位置——并跳转到这个位置
+
+## 在 QEMU 中启动内核
+
+### 安装 qemu
+我们可以从` qemu `的官方网站`（https://www.qemu.org/）`下载最新版本的` qemu `
+` windows `使用`msys2 的 pacman `安装` qemu `
+```bash
+pacman -Syyu   #更新软件包数据库
+
+pacman -S mingw-w64-x86_64-qemu    #安装 qemu，
+
+#安装完成后将 qemu 添加到环境变量中
+```
+
+### 启动内核
+在` qemu `目录下，打开` PowerShell `窗口，执行下面的命令来启动内核：
+```bash
+.\qemu-system-x86_64.exe -drive format=raw,file=target/x86_64-rust_os/debug/bootimage-rust_os.bin
+```
+
+### 在真机上运行内核(未测试)
+我们也可以使用` dd 工具 `把内核写入` U 盘 `，以便在真机上启动。可以输入下面的命令：
+```bash
+dd if=target/x86_64-blog_os/debug/bootimage-blog_os.bin of=/dev/sdX && sync
+```
+
+` sdX `是` U盘 `的设备名`（device name）`。请注意，在选择设备名的时候一定要极其小心，因为目标设备上已有的数据将全部被擦除
+
+写入到` U 盘 `之后，你可以在真机上通过引导启动你的系统。视情况而定，你可能需要在` BIOS `中打开特殊的启动菜单，或者调整启动顺序。需要注意的是，` bootloader `包暂时不支持` UEFI `，所以我们并不能在` UEFI `机器上启动
+
+### 使用 cargo run
+要让在` QEMU `中运行内核更轻松，我们可以设置在` cargo `配置文件中设置` runner `配置项：
+```toml
+[target.'cfg(target_os = "none")']
+runner = "bootimage runner"
+```
+
+` target.'cfg(target_os = "none")' `筛选了三元组中宿主系统设置为` "none" `的所有编译目标——这将包含我们的` x86_64-rust_os.json `目标。另外，` runner `的值规定了运行` cargo run `使用的命令；这个命令将在成功编译后执行，而且会传递可执行文件的路径为第一个参数
+
+命令` bootimage runner `由` bootimage `包提供，参数格式经过特殊设计，可以用于` runner `命令。它将给定的可执行文件与项目的引导程序依赖项链接，然后在` QEMU `中启动它
