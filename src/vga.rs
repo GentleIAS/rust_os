@@ -119,4 +119,17 @@ pub fn print_something() {
     writer.write_byte(b'H');
     writer.write_string("ello ");
     writer.write_string("World!");
+
+    use core::fmt::Write;   //必要进行导入！！！
+    write!(writer, "The numbers are {} and {}", 42, 1.0/3.0).unwrap();
+}
+
+///实现格式化宏 trait
+///
+///这使得我们可以使用 `write!` 和 `writeln!` 宏来格式化输出到 `Writer` 结构体
+impl core::fmt::Write for Writer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
 }

@@ -3,7 +3,7 @@
 # 独立式可执行程序
 
 ## no_std属性
-#![no_std] //禁用标准库
+` #![no_std] `：禁用标准库
 
 ## panic 处理函数
 `panic_handler`属性定义一个函数，它会在一个` panic `发生时被调用
@@ -580,3 +580,36 @@ impl Writer {
 在这里，我们使用` core::ptr::write_volatile `函数而不是普通的赋值操作。这个函数接受两个参数：一个可变指针和要写入的值。它确保写入操作不会被编译器优化掉，这对于与硬件交互（如VGA缓冲区）非常重要
 
 正如代码所示，我们不再使用普通的 = 赋值，而使用了` core::ptr::write_volatile `函数：这能确保编译器不再优化这个写入操作。这种方法不需要添加额外的依赖项，因为` core::ptr `是Rust核心库的一部分
+
+### 格式化宏
+支持` Rust `提供的格式化宏`（formatting macros）`也是一个很好的思路。通过这种途径，我们可以轻松地打印不同类型的变量，如整数或浮点数。为了支持它们，我们需要实现` core::fmt::Write trait `要实现它，唯一需要提供的方法是` write_str `，它和我们先前编写的 `write_string `方法差别不大，只是返回值类型变成了` fmt::Result `：
+```rust
+impl core::fmt::Write for Writer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+```
+
+这里，` Ok(()) `属于` Result `枚举类型中的` Ok `，包含一个值为` () `的变量，现在我们就可以使用` Rust `内置的格式化宏` write! 和 writeln! `了
+```rust
+pub fn print_something() {
+    use core::fmt::Write;
+    let mut writer = Writer {
+        column_position: 0,
+        color_code: ColorCode::new(Color::Yellow, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    writer.write_byte(b'H');
+    writer.write_string("ello! ");
+
+    use core::fmt::Write;
+    write!(writer, "The numbers are {} and {}", 42, 1.0/3.0).unwrap();
+}
+```
+
+在这个例子中，我们使用了` write! `宏来格式化输出。这个宏接受一个` Writer `实例和一个格式化字符串作为参数。格式化字符串中的` {} `占位符会被后面的参数替换。在这个例子中，我们替换了` {} `占位符为` 42 `和` 1.0/3.0 `
+
+` unwrap `方法用于处理` Result `类型的返回值。如果` Result `是` Ok `，那么` unwrap `会返回内部的值；如果是` Err `，那么` unwrap `会` panic `
