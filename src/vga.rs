@@ -69,20 +69,28 @@ impl Writer {
                     self.new_line();
                 }
 
-                let row = BUFFER_HEIGHT - 1;
+                let row = BUFFER_HEIGHT - 25;
                 let col = self.column_position;
 
                 let color_code = self.color_code;
-                self.buffer.chars[row][col] = ScreenChar {
+                let screen_char = ScreenChar {
                     ascii_character: byte,
                     color_code,
                 };
+                
+                //使用核心库的易失写入函数确保编译器不会优化掉这个操作
+                // unsafe 关键字表示这段代码可能会违反Rust的安全保证
+                unsafe {
+                    let buffer_ptr = core::ptr::addr_of_mut!(self.buffer.chars[row][col]);
+                    core::ptr::write_volatile(buffer_ptr, screen_char);
+                }
                 self.column_position += 1;
             }
         }
     }
 
-    fn new_line(&mut self) {/* TODO */}
+    fn new_line(&mut self) {
+    }
 }
 
 ///屏幕字符串写入器实现
@@ -104,11 +112,11 @@ impl Writer {
 pub fn print_something() {
     let mut writer = Writer {
         column_position: 0,
-        color_code: ColorCode::new(Color::Yellow, Color::Black),
+        color_code: ColorCode::new(Color::Brown, Color::Black),
         buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
     };
 
     writer.write_byte(b'H');
     writer.write_string("ello ");
-    writer.write_string("Wörld!");
+    writer.write_string("World!");
 }

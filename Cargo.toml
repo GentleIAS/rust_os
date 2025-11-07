@@ -7,6 +7,9 @@ edition = "2024"
 #引导程序依赖项
 bootloader = "0.9"
 
+#易失操作依赖项
+volatile = "0.6.1"
+
 [profile.dev]
 panic = "abort"
 
