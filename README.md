@@ -43,12 +43,12 @@ panic = "abort"
 ### 标准Rust程序的启动流程
 在使用标准库的` Rust `程序中，启动流程是这样的：
 
-- 1. 操作系统加载程序 → 跳转到` crt0 (C runtime zero) `
-- 2. ` crt0 `执行基本初始化 → 调用` C `运行时入口点
-- 3. ` C `运行时 → 调用` Rust `运行时入口点 ( start language item)
-- 4. ` Rust `运行时 → 初始化` Rust `特定环境（如栈溢出检测等）
-- 5. ` Rust `运行时 → 调用` main `函数
-- 
+- 操作系统加载程序 → 跳转到` crt0 (C runtime zero) `
+- ` crt0 `执行基本初始化 → 调用` C `运行时入口点
+- ` C `运行时 → 调用` Rust `运行时入口点 ( start language item)
+- ` Rust `运行时 → 初始化` Rust `特定环境（如栈溢出检测等）
+- ` Rust `运行时 → 调用` main `函数
+  
 Rust程序借用了C语言的启动基础设施 ，但并不是从C语言入口启动的，而是：
 - 借用了` C `语言的启动环境初始化（通过` crt0 `）
 - 然后进入` Rust `自己的运行时
@@ -258,20 +258,6 @@ target = "x86_64-rust_os.json"
 ### 向屏幕打印字符
 最简单的方式是写入` VGA `字符缓冲区`（VGA text buffer）`：这是一段映射到` VGA `硬件的特殊内存片段，包含着显示在屏幕上的内容。通常情况下，它能够存储` 25 `行、` 80 `列共` 2000 `个字符单元`（character cell）`；每个字符单元能够显示一个` ASCII `字符，也能设置这个字符的前景色`（foreground color）`和背景色`（background color）`
 
-####  VGA 字符缓冲区
-- 1.定义：VGA 字符缓冲区是 x86 机器在“文本模式”下的显存映射区域，CPU 直接往这块内存写数据，屏幕就会显示对应字符
-- 2.物理地址：常见为 0xB8000（段:偏移通常写作 B800:0000）
-- 3.尺寸：默认 80 列 × 25 行，共 2000 个字符单元；每个单元占 2 字节，总计 4000 字节
-- 4.内存布局（每单元 2 字节）：
- - 第 1 字节：ASCII 字符码
- - 第 2 字节：属性字节（颜色/闪烁）
- - 低 4 位：前景色
- - 高 3 位：背景色
- - 最高位：闪烁位（某些模式下可作为“高亮背景”位）
- - 颜色编码（常见 4 位）：0-黑, 1-蓝, 2-绿, 3-青, 4-红, 5-品红, 6-棕/黄, 7-亮灰, 8-暗灰, 9-亮蓝, …, 15-白
-- 工作方式：这是“内存映射 I/O”。向 0xB8000 开始的内存写入对应字节，VGA 控制器会把它渲染到屏幕上；无需调用 BIOS 或操作系统 API。
-典型用途：在自制内核早期阶段打印调试文本（例如在 Rust no_std/no_main 环境下），不用依赖串口或图形模式
-
 ```rust
 static HELLO: &[u8] = b"Hello World!";
 
@@ -375,3 +361,175 @@ runner = "bootimage runner"
 ` target.'cfg(target_os = "none")' `筛选了三元组中宿主系统设置为` "none" `的所有编译目标——这将包含我们的` x86_64-rust_os.json `目标。另外，` runner `的值规定了运行` cargo run `使用的命令；这个命令将在成功编译后执行，而且会传递可执行文件的路径为第一个参数
 
 命令` bootimage runner `由` bootimage `包提供，参数格式经过特殊设计，可以用于` runner `命令。它将给定的可执行文件与项目的引导程序依赖项链接，然后在` QEMU `中启动它
+
+# VGA 字符模式
+
+##  VGA 字符缓冲区
+- 1.定义：VGA 字符缓冲区是 x86 机器在“文本模式”下的显存映射区域，CPU 直接往这块内存写数据，屏幕就会显示对应字符
+- 2.物理地址：常见为 0xB8000（段:偏移通常写作 B800:0000）
+- 3.尺寸：默认 80 列 × 25 行，共 2000 个字符单元；每个单元占 2 字节，总计 4000 字节
+- 4.内存布局（每单元 2 字节）：
+ - 第 1 字节：ASCII 字符码
+ - 第 2 字节：属性字节（颜色/闪烁）
+ - 低 4 位：前景色
+ - 高 3 位：背景色
+ - 最高位：闪烁位（某些模式下可作为“高亮背景”位）
+ - 颜色编码（常见 4 位）：0-黑, 1-蓝, 2-绿, 3-青, 4-红, 5-品红, 6-棕/黄, 7-亮灰, 8-暗灰, 9-亮蓝, …, 15-白
+- 工作方式：这是“内存映射 I/O”。向` 0xB8000 `开始的内存写入对应字节，VGA 控制器会把它渲染到屏幕上；无需调用` BIOS `或操作系统` API `
+典型用途：在自制内核早期阶段打印调试文本（例如在` Rust no_std/no_main `环境下），不用依赖串口或图形模式
+
+要修改` VGA `字符缓冲区，我们可以通过存储器映射输入输出`（memory-mapped I/O）`的方式，读取或写入地址` 0xb8000 `；这意味着，我们可以像操作普通的内存区域一样操作这个地址，需要注意的是，一些硬件虽然映射到存储器，但可能不会完全支持所有的内存操作：可能会有一些设备支持按` u8 `字节读取，但在读取` u64 `时返回无效的数据。幸运的是，字符缓冲区都支持标准的读写操作，所以我们不需要用特殊的标准对待它
+
+## 包装到 Rust 模块
+新建` src/vga.rs `文件，用于包装` VGA `字符缓冲区的操作
+
+### 颜色
+使用` Rust `的枚举`（enum）`表示特定的颜色：
+```rust
+#[allow(dead_code)]   //对 Color 枚举类型禁用未使用的变量发出警告
+//生成（derive）了 Copy、Clone、Debug、PartialEq 和 Eq 这几个 trait：
+//这让我们的类型遵循复制语义（copy semantics），也让它可以被比较、被调试和打印。
+#[core::prelude::rust_2024::derive(core::fmt::Debug, core::clone::Clone, core::marker::Copy, core::cmp::PartialEq, core::cmp::Eq)]     //edition = "2024"
+#[repr(u8)]   //注记标注的枚举类型，都会以一个 u8 的形式存储
+pub enum Color {
+    Black = 0,
+    Blue = 1,
+    Green = 2,
+    Cyan = 3,
+    Red = 4,
+    Magenta = 5,
+    Brown = 6,
+    LightGray = 7,
+    DarkGray = 8,
+    LightBlue = 9,
+    LightGreen = 10,
+    LightCyan = 11,
+    LightRed = 12,
+    Pink = 13,
+    Yellow = 14,
+    White = 15,
+}
+```
+
+为了描述包含前景色和背景色的、完整的颜色代码（color code），我们基于 u8 创建一个新类型：
+```rust
+#[core::prelude::rust_2024::derive(core::fmt::Debug, core::clone::Clone, core::marker::Copy, core::cmp::PartialEq, core::cmp::Eq)]     //edition = "2024"
+#[repr(transparent)]
+struct ColorCode(u8);
+
+impl ColorCode {
+    fn new(foreground: Color, background: Color) -> ColorCode {
+        ColorCode((background as u8) << 4 | (foreground as u8))
+    }
+}
+```
+这里` ColorCode `类型包装了一个完整的颜色代码字节，它包含前景色和背景色信息。和` Color `类型类似，我们为它生成` Copy `和` Debug `等一系列` trait `。为了确保` ColorCode `和` u8 `有完全相同的内存布局，我们添加` repr(transparent) `标记
+
+### 字符缓冲区
+```rust
+#[core::prelude::rust_2024::derive(core::fmt::Debug, core::clone::Clone, core::marker::Copy, core::cmp::PartialEq, core::cmp::Eq)]     //edition = "2024"
+#[repr(C)]
+struct ScreenChar {
+    ascii_character: u8,
+    color_code: ColorCode,
+}
+
+const BUFFER_HEIGHT: usize = 25;
+const BUFFER_WIDTH: usize = 80;
+
+#[repr(transparent)]
+struct Buffer {
+    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+}
+```
+
+在内存布局层面，` Rust `并不保证按顺序布局成员变量。因此，我们需要使用` #[repr(C)] `标记结构体；这将按` C 语言 `约定的顺序布局它的成员变量，让我们能正确地映射内存片段。对` Buffer `类型，我们再次使用` repr(transparent) `，来确保类型和它的单个成员有相同的内存布局，为了输出字符到屏幕，我们来创建一个 Writer 类型：
+```rust
+pub struct Writer {
+    column_position: usize,
+    color_code: ColorCode,
+    buffer: &'static mut Buffer,
+}
+```
+
+我们将让这个` Writer `类型将字符写入屏幕的最后一行，并在一行写满或接收到换行符` \n `的时候，将所有的字符向上位移一行。` column_position `变量将跟踪光标在最后一行的位置。当前字符的前景和背景色将由` color_code `变量指定；另外，我们存入一个` VGA `字符缓冲区的可变借用到` buffer `变量中。需要注意的是，这里我们对借用使用显式生命周期`（explicit lifetime）`，告诉编译器这个借用在何时有效：我们使用` 'static `生命周期`（’static lifetime）`，意味着这个借用应该在整个程序的运行期间有效；这对一个全局有效的` VGA `字符缓冲区来说，是非常合理的
+
+### 打印字符
+现在我们可以使用 Writer 类型来更改缓冲区内的字符了。首先，为了写入一个 ASCII 码字节，我们创建这样的函数：
+```rust
+impl Writer {
+    pub fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            byte => {
+                if self.column_position >= BUFFER_WIDTH {
+                    self.new_line();
+                }
+
+                let row = BUFFER_HEIGHT - 1;
+                let col = self.column_position;
+
+                let color_code = self.color_code;
+                self.buffer.chars[row][col] = ScreenChar {
+                    ascii_character: byte,
+                    color_code,
+                };
+                self.column_position += 1;
+            }
+        }
+    }
+
+    fn new_line(&mut self) {/* TODO */}
+}
+```
+
+如果这个字节是一个换行符`（line feed）`字节` \n `，我们的` Writer `不应该打印新字符，相反，它将调用我们稍后会实现的` new_line `方法；其它的字节应该将在` match `语句的第二个分支中被打印到屏幕上
+
+当打印字节时，Writer 将检查当前行是否已满。如果已满，它将首先调用` new_line `方法来将这一行字向上提升，再将一个新的` ScreenChar `写入到缓冲区，最终将当前的光标位置前进一位
+
+要打印整个字符串，我们把它转换为字节并依次输出：
+```rust
+impl Writer {
+    pub fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            match byte {
+                //可以是能打印的 ASCII 码字节，也可以是换行符
+                0x20..=0x7e | b'\n' => self.write_byte(byte),
+                //不包含在上述范围之内的字节
+                _ => self.write_byte(0xfe),
+            }
+
+        }
+    }
+}
+```
+
+` VGA `字符缓冲区只支持` ASCII `码字节和代码页` 437（Code page 437）`定义的字节。` Rust `语言的字符串默认编码为` UTF-8 `，也因此可能包含一些` VGA `字符缓冲区不支持的字节：我们使用` match `语句，来区别可打印的` ASCII `码或换行字节，和其它不可打印的字节。对每个不可打印的字节，我们打印一个` ■ `符号；这个符号在` VGA `硬件中被编码为十六进制的` 0xfe `
+
+我们可以亲自试一试已经编写的代码。为了这样做，我们可以临时编写一个函数：
+```rust
+pub fn print_something() {
+    let mut writer = Writer {
+        column_position: 0,
+        color_code: ColorCode::new(Color::Yellow, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    writer.write_byte(b'H');
+    writer.write_string("ello ");
+    writer.write_string("Wörld!");
+}
+```
+
+这个函数首先创建一个指向` 0xb8000 `地址` VGA `缓冲区的` Writer `。实现这一点，我们需要编写的代码可能看起来有点奇怪：首先，我们把整数` 0xb8000 `强制转换为一个可变的裸指针`（raw pointer）`；之后，通过运算符` * `，我们将这个裸指针解引用；最后，我们再通过` &mut `，再次获得它的可变借用。这些转换需要` unsafe `语句块`（unsafe block）`，因为编译器并不能保证这个裸指针是有效的
+
+然后它将字节` b'H' `写入缓冲区内. 前缀` b `创建了一个字节常量`（byte literal）`，表示单个` ASCII `码字符；通过尝试写入` "ello " `和` "Wörld!" `，我们可以测试` write_string `方法和其后对无法打印字符的处理逻辑。为了观察输出，我们需要在` _start `函数中调用` print_something `方法：
+```rust
+mod vga;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    vga::print_something();
+    loop {}
+}
+```
